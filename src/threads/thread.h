@@ -89,6 +89,7 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
+    int64_t wakeup_tick;                /* Absolute tick to wake this thread up. (added for pintos 1 - alarm clock)*/
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */

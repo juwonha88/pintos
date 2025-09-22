@@ -20,6 +20,9 @@
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
 
+/* list of threads in sleeping state. Sorted by ascending order of wakeup_tick. (added for pintos 1 - alarm clock) */
+static struct list sleep_list; 
+
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
@@ -29,6 +32,7 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
+static bool wakeup_less(const struct list_elem *a, const struct list_elem *b, void *aux);
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -37,6 +41,7 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init(&sleep_list); //initializing sleep list. (added for pintos 1 - alarm clock)
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -89,11 +94,35 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
+  /* 
+  ----original code before pintos 1 - alarm clock----
+
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
   while (timer_elapsed (start) < ticks) 
     thread_yield ();
+
+  */
+
+  /*new code*/
+  if (ticks <= 0) return;
+
+  int64_t wake_tick = timer_ticks() + ticks;
+
+  // interrupt disable
+  enum intr_level original_level = intr_disable(); 
+
+  struct thread *currentT = thread_current();
+  currentT->wakeup_tick = wake_tick;
+  list_insert_ordered(&sleep_list, &currentT->elem, wakeup_less, NULL);
+
+  thread_block(); //block thread
+
+  //interrupt recovery
+  intr_set_level (original_level);
+
+
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -172,6 +201,18 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+
+  //check sleep list to find out threads to wake up
+  while (!list_empty (&sleep_list)) {
+    //first thread of sleep_list (thread with smallest wakeup_tick)
+    struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem); 
+    if (t->wakeup_tick <= ticks) {
+      list_pop_front(&sleep_list);
+      thread_unblock (t); /*change state to READY*/
+    } else {
+      break; //no need to check other threads
+    }
+  }
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -243,4 +284,12 @@ real_time_delay (int64_t num, int32_t denom)
      the possibility of overflow. */
   ASSERT (denom % 1000 == 0);
   busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
+}
+
+/* Static function for comparing wakeup_tick between two threads. Used to keep sleep_list in ascending order of wakeup_tick. (added for pintos 1 - alarm clock) */
+static bool wakeup_less(const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+  const struct thread *ta = list_entry(a, struct thread, elem);
+  const struct thread *tb = list_entry(b, struct thread, elem);
+  return ta->wakeup_tick < tb->wakeup_tick;
 }
