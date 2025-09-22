@@ -5,6 +5,9 @@
 #include <list.h>
 #include <stdint.h>
 
+//ADD TYC: waiting lock을 위한 변수 선언
+struct lock;
+
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -94,6 +97,12 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
+    //ADD TYC: priority scheduling을 위한 변수 추가
+    int original_priority;             // donation 받기 전의 원래 우선순위
+    struct lock *waiting_lock;         // 현재 이 스레드가 대기하고 있는 lock
+    struct list donations;             // 이 스레드에 donate한 스레드들의 리스트
+    struct list_elem donation_elem;    // donations 리스트를 위한 list_elem
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -138,5 +147,12 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+//ADD TYC: priority scheduling을 위해 필요한 함수 구현
+bool thread_priority_more (const struct list_elem *a, const struct list_elem *b, void *c);
+void donate_priority (void);
+void remove_donations_for_lock (struct lock *lock);
+void refresh_priority (void);
+
 
 #endif /* threads/thread.h */

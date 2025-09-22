@@ -237,8 +237,24 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+
+  //CHANGE TYC: list_push_back -> list_insert_ordered
+  //list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem, thread_priority_more, NULL);
+
   t->status = THREAD_READY;
+
+  //ADD TYC: 현재 스레드보다 unblock된 스레드의 우선순위가 높으면 CPU 양보
+  // 인터럽트 컨텍스트인지 확인하여 적절한 yield 함수 호출
+  if (thread_current() != idle_thread && thread_current()->priority < t->priority) {
+    if (!intr_context ()) {
+      thread_yield ();
+    }
+    else {
+      intr_yield_on_return ();
+    }
+  }
+
   intr_set_level (old_level);
 }
 
@@ -307,8 +323,12 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread) {
+    //CHANGE TYC: list_push_back -> list_insert_ordered
+    //list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered(&ready_list, &cur->elem, thread_priority_more, NULL);
+  }
+
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -335,7 +355,21 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  //ADD TYC
+  intr_disable ();
+  struct thread *cur = thread_current ();
+  cur->original_priority = new_priority; // donation 회수 시 base priority도 같이 업데이트
+  
+  //CHANGE TYC: 기존 형태를 좀 더 깔끔하게 변형
+  //thread_current ()->priority = new_priority;
+  refresh_priority();
+
+  //ADD TYC: 레디 큐에 더 높은 priority가 있으면 즉시 양보
+  if (!list_empty (&ready_list) && cur->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority) {
+    thread_yield();
+  }
+  intr_enable();
+  //intr_set_level (old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -462,6 +496,12 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+
+  //ADD TYC: base priority 선언 및 donation list 초기화
+  t->original_priority = priority;
+  list_init (&t->donations);
+  t->waiting_lock = NULL;
+
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
@@ -582,3 +622,75 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+// ADD TYC: 관련 함수 추가
+// 두 스레드의 우선순위를 비교하는 함수 (a > b 이면 true)
+bool thread_priority_more (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+  const struct thread *t_a = list_entry(a, struct thread, elem);
+  const struct thread *t_b = list_entry(b, struct thread, elem);
+  return t_a->priority > t_b->priority;
+}
+
+//ADD TYC: 관련 함수 추가
+bool donation_priority_more (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+  const struct thread *t_a = list_entry(a, struct thread, donation_elem);
+  const struct thread *t_b = list_entry(b, struct thread, donation_elem);
+  return t_a->priority > t_b->priority;
+}
+
+// ADD TYC: 관련 함수 추가
+// 현재 스레드의 우선순위를 기부받은 우선순위를 포함하여 갱신
+void refresh_priority (void) {
+  struct thread *cur = thread_current ();
+  cur->priority = cur->original_priority;
+
+  if (!list_empty (&cur->donations)) {
+    // donation 리스트는 donation_elem을 기준으로 정렬해야 함
+    list_sort (&cur->donations, donation_priority_more, NULL);
+    struct thread *donor = list_entry (list_front (&cur->donations), struct thread, donation_elem);
+    if (donor->priority > cur->priority) {
+        cur->priority = donor->priority;
+    }
+  }
+}
+
+// ADD TYC: 관련 함수 추가
+// 중첩된 기부를 처리. 현재 스레드부터 시작하여 lock을 따라가며 우선순위 전파
+void donate_priority (void) {
+  int depth;
+  struct thread *cur = thread_current ();
+
+  for (depth = 0; depth < 8; ++depth) {
+    if (!cur->waiting_lock) break;
+
+    struct thread *holder = cur->waiting_lock->holder;
+    if (holder == NULL) break;
+
+    /* holder의 우선순위가 낮을 경우에만 기부 */
+    if (holder->priority < thread_current()->priority) {
+      holder->priority = thread_current()->priority;
+      cur = holder;
+    }
+    else {
+      break;
+    }
+  }
+}
+
+// ADD TYC: 관련 함수 추가
+// lock을 놓아줄 때, 해당 lock과 관련된 모든 donation 정보를 제거
+void remove_donations_for_lock (struct lock *lock) {
+  struct thread *cur = thread_current ();
+  struct list_elem *e = list_begin (&cur->donations);
+
+  while (e != list_end (&cur->donations)) {
+    struct thread *donor = list_entry (e, struct thread, donation_elem);
+    if (donor->waiting_lock == lock) {
+      e = list_remove (e);
+    }
+    else {
+      e = list_next (e);
+    }
+  }
+}
+

@@ -32,6 +32,10 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+//ADD TYC: donation
+#define DONATION_MAX_DEPTH 8
+static bool cond_sema_more (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -68,7 +72,10 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      list_push_back (&sema->waiters, &thread_current ()->elem);
+      //CHANGE TYC: list_push_back -> list_insert_ordered
+      //list_push_back (&sema->waiters, &thread_current ()->elem);
+      list_insert_ordered(&sema->waiters, &thread_current()->elem, thread_priority_more, NULL);
+
       thread_block ();
     }
   sema->value--;
@@ -113,10 +120,15 @@ sema_up (struct semaphore *sema)
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
-  if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+
+  //ADD TYC
   sema->value++;
+
+  if (!list_empty (&sema->waiters)) {
+    // value를 증가시킨 후 스레드를 깨운다.
+    thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
+  }
+
   intr_set_level (old_level);
 }
 
@@ -196,8 +208,21 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+  //ADD TYC: 해당 lock을 기다린다고 표시 후 필요하면 donation을 전파함
+  struct thread *cur = thread_current();
+  if (lock->holder != NULL) {
+    cur->waiting_lock = lock;
+    // lock holder에게 현재 스레드를 기부자 리스트에 추가 요청
+    list_insert_ordered (&lock->holder->donations, &cur->donation_elem, thread_priority_more, NULL);
+    // 우선순위 기부 전파
+    donate_priority ();
+  }
+
   sema_down (&lock->semaphore);
-  lock->holder = thread_current ();
+
+  //ADD TYC: lock 획득 성공
+  cur->waiting_lock = NULL;
+  lock->holder = cur;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -230,6 +255,12 @@ lock_release (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
+
+  //ADD TYC: donation 회수 및 priority 업데이트
+  /* 현재 lock과 관련된 donation들을 모두 제거 */
+  remove_donations_for_lock (lock);
+  /* donation 제거 후 우선순위 재계산 */
+  refresh_priority ();
 
   lock->holder = NULL;
   sema_up (&lock->semaphore);
@@ -295,7 +326,11 @@ cond_wait (struct condition *cond, struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
   
   sema_init (&waiter.semaphore, 0);
-  list_push_back (&cond->waiters, &waiter.elem);
+
+  //CHAGNE TYC:
+  //list_push_back (&cond->waiters, &waiter.elem);
+  list_insert_ordered(&cond->waiters, &waiter.elem, cond_sema_more, NULL);
+  
   lock_release (lock);
   sema_down (&waiter.semaphore);
   lock_acquire (lock);
@@ -316,9 +351,12 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (!intr_context ());
   ASSERT (lock_held_by_current_thread (lock));
 
-  if (!list_empty (&cond->waiters)) 
-    sema_up (&list_entry (list_pop_front (&cond->waiters),
-                          struct semaphore_elem, elem)->semaphore);
+  if (!list_empty (&cond->waiters)) {
+    //ADD TYC
+    list_sort (&cond->waiters, cond_sema_more, NULL);
+
+    sema_up (&list_entry (list_pop_front (&cond->waiters), struct semaphore_elem, elem)->semaphore);
+  }
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
@@ -335,4 +373,17 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 
   while (!list_empty (&cond->waiters))
     cond_signal (cond, lock);
+}
+
+//ADD TYC: 함수 추가
+static bool cond_sema_more (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  const struct semaphore_elem *sema_a = list_entry(a, struct semaphore_elem, elem);
+  const struct semaphore_elem *sema_b = list_entry(b, struct semaphore_elem, elem);
+
+  // 각 세마포어의 waiters 리스트에서 가장 우선순위가 높은 스레드를 찾아 비교
+  const struct thread *t_a = list_entry(list_front(&sema_a->semaphore.waiters), struct thread, elem);
+  const struct thread *t_b = list_entry(list_front(&sema_b->semaphore.waiters), struct thread, elem);
+
+  return t_a->priority > t_b->priority;
 }
