@@ -125,7 +125,9 @@ sema_up (struct semaphore *sema)
   sema->value++;
 
   if (!list_empty (&sema->waiters)) {
-    // value를 증가시킨 후 스레드를 깨운다.
+    // priority donation이 발생했을 수 있으므로 waiters list를 재정렬
+    list_sort(&sema->waiters, thread_priority_more, NULL);
+    // 가장 높은 우선순위 스레드를 깨운다.
     thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
   }
 
@@ -213,7 +215,7 @@ lock_acquire (struct lock *lock)
   if (lock->holder != NULL) {
     cur->waiting_lock = lock;
     // lock holder에게 현재 스레드를 기부자 리스트에 추가 요청
-    list_insert_ordered (&lock->holder->donations, &cur->donation_elem, thread_priority_more, NULL);
+    list_insert_ordered (&lock->holder->donations, &cur->donation_elem, donation_priority_more, NULL);
     // 우선순위 기부 전파
     donate_priority ();
   }
@@ -380,6 +382,11 @@ static bool cond_sema_more (const struct list_elem *a, const struct list_elem *b
 {
   const struct semaphore_elem *sema_a = list_entry(a, struct semaphore_elem, elem);
   const struct semaphore_elem *sema_b = list_entry(b, struct semaphore_elem, elem);
+
+  // 리스트가 비어있지 않은지 확인 후 접근
+  if (list_empty(&sema_a->semaphore.waiters) || list_empty(&sema_b->semaphore.waiters)) {
+    return false; // 비어 있는 경우 순서 유지
+  }
 
   // 각 세마포어의 waiters 리스트에서 가장 우선순위가 높은 스레드를 찾아 비교
   const struct thread *t_a = list_entry(list_front(&sema_a->semaphore.waiters), struct thread, elem);

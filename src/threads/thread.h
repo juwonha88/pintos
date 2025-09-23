@@ -150,6 +150,7 @@ int thread_get_load_avg (void);
 
 //ADD TYC: priority scheduling을 위해 필요한 함수 구현
 bool thread_priority_more (const struct list_elem *a, const struct list_elem *b, void *c);
+bool donation_priority_more (const struct list_elem *a, const struct list_elem *b, void *aux);
 void donate_priority (void);
 void remove_donations_for_lock (struct lock *lock);
 void refresh_priority (void);
