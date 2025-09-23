@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/fixed-point.h"
 
 //ADD TYC: waiting lock을 위한 변수 선언
 struct lock;
@@ -103,6 +104,10 @@ struct thread
     struct list donations;             // 이 스레드에 donate한 스레드들의 리스트
     struct list_elem donation_elem;    // donations 리스트를 위한 list_elem
 
+    //MLFQS variables
+    int nice;
+    fixed_point_t recent_cpu;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -155,5 +160,12 @@ void donate_priority (void);
 void remove_donations_for_lock (struct lock *lock);
 void refresh_priority (void);
 
+//MLFQS functions
+void mlfqs_calculate_priority(struct thread *t);
+void mlfqs_calculate_recent_cpu(struct thread *t);
+void mlfqs_calculate_load_avg(void);
+void mlfqs_update_priority_all(void);
+void mlfqs_update_recent_cpu_all(void);
+void mlfqs_increment_recent_cpu(void);
 
 #endif /* threads/thread.h */

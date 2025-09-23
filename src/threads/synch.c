@@ -212,7 +212,7 @@ lock_acquire (struct lock *lock)
 
   //ADD TYC: 해당 lock을 기다린다고 표시 후 필요하면 donation을 전파함
   struct thread *cur = thread_current();
-  if (lock->holder != NULL) {
+  if (lock->holder != NULL && !thread_mlfqs) {
     cur->waiting_lock = lock;
     // lock holder에게 현재 스레드를 기부자 리스트에 추가 요청
     list_insert_ordered (&lock->holder->donations, &cur->donation_elem, donation_priority_more, NULL);
@@ -259,10 +259,12 @@ lock_release (struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
 
   //ADD TYC: donation 회수 및 priority 업데이트
-  /* 현재 lock과 관련된 donation들을 모두 제거 */
-  remove_donations_for_lock (lock);
-  /* donation 제거 후 우선순위 재계산 */
-  refresh_priority ();
+  if (!thread_mlfqs){
+    /* 현재 lock과 관련된 donation들을 모두 제거 */
+    remove_donations_for_lock (lock);
+    /* donation 제거 후 우선순위 재계산 */
+    refresh_priority ();
+  }
 
   lock->holder = NULL;
   sema_up (&lock->semaphore);
